@@ -27,8 +27,11 @@ class Markowitz(object):
     '''
     # 定义函数中的不同变量
     def __init__(self, daily_ret):
-        self.noa = len(daily_ret.columns)           # 资产数量
+        '''外部输入变量'''
         self.daily_ret = daily_ret                  # 资产日收益率
+
+        '''内部计算变量'''
+        self.noa = len(daily_ret.columns)           # 资产数量
         self.tradeday = daily_ret.index             # 资产交易日
         self.asset = daily_ret.columns              # 资产名称
         self.ann_ret = pd.DataFrame()               # 资产年化收益率
@@ -85,11 +88,33 @@ class Markowitz(object):
         _prets = np.array(_prets)
         _pvols = np.array(_pvols)
         
+        # 定义有效边界：给定风险水平下最大收益
+        def min_func_port(_weights):
+            return self.statistics(_weights)[1]
+        
+                    
+        # 内置运行一遍get_annulized_data
+        self.get_annualize_data()
+        
+        
+        # 有效收益率区间（后期可以调整）
+        _trets = np.linspace(min(self.ann_ret),max(self.ann_ret),100)
+        _tvols = []
+        for tret in _trets:
+            # 定义约束条件
+            _cons = ({'type':'eq', 'fun': lambda x: self.statistics(x)[0] - tret},
+                      {'type':'eq', 'fun': lambda x: np.sum(x) - 1})
+            # 约束为0到1之间
+            _bnds = tuple((0,1) for x in range(self.noa))
+            _res = sco.minimize(min_func_port, self.noa * [1./self.noa], method = 'SLSQP',
+                                bounds = _bnds, constraints = _cons)
+            _tvols.append(_res['fun'])
+        _tvols = np.array(_tvols)
 
         # 不画出有效边界和资本市场线
         if efficient_front == False and cap_market_line == False:
             plt.figure.Figure(figsize = (15,10))
-            plt.pyplot.scatter(_pvols, _prets, c = _prets/_pvols, marker = 'o')
+            plt.pyplot.scatter(_pvols, _prets, c = _prets/_pvols, marker = 'o', cmap = 'Accent')
             plt.pyplot.grid(True)
             plt.pyplot.xlabel('Expected Volatility')
             plt.pyplot.ylabel('Expected Return')
@@ -97,23 +122,6 @@ class Markowitz(object):
         
         # 画出有效边界
         elif efficient_front:            
-            # 定义有效边界：给定风险水平下最大收益
-            def min_func_port(_weights):
-                return self.statistics(_weights)[1]
-            
-            # 有效收益率区间（后期可以调整）
-            _trets = np.linspace(min(_prets),max(_prets),100)
-            _tvols = []
-            for tret in _trets:
-                # 定义约束条件
-                _cons = ({'type':'eq', 'fun': lambda x: self.statistics(x)[0] - tret},
-                          {'type':'eq', 'fun': lambda x: np.sum(x) - 1})
-                # 约束为0到1之间
-                _bnds = tuple((0,1) for x in range(self.noa))
-                _res = sco.minimize(min_func_port, self.noa * [1./self.noa], method = 'SLSQP',
-                                    bounds = _bnds, constraints = _cons)
-                _tvols.append(_res['fun'])
-            _tvols = np.array(_tvols)
 
             # 内置运行一遍constrain_portfolio得到带有约束的组合数据
             self.constraint_portfolio()
@@ -131,24 +139,7 @@ class Markowitz(object):
             plt.pyplot.colorbar(label='sharpe ratio')
 
         # 画出有效边界和最优组合
-        elif cap_market_line:            
-            # 定义有效边界：给定风险水平下最大收益
-            def min_func_port(_weights):
-                return self.statistics(_weights)[1]
-            
-            # 有效收益率区间（后期可以调整）
-            _trets = np.linspace(min(_prets),max(_prets),100)
-            _tvols = []
-            for tret in _trets:
-                # 定义约束条件
-                _cons = ({'type':'eq', 'fun': lambda x: self.statistics(x)[0] - tret},
-                          {'type':'eq', 'fun': lambda x: np.sum(x) - 1})
-                # 约束为0到1之间
-                _bnds = tuple((0,1) for x in range(self.noa))
-                _res = sco.minimize(min_func_port, self.noa * [1./self.noa], method = 'SLSQP',
-                                    bounds = _bnds, constraints = _cons)
-                _tvols.append(_res['fun'])
-            _tvols = np.array(_tvols)
+        elif cap_market_line:          
 
             # 资本市场线
             _ind = np.argmin(_tvols)
@@ -172,13 +163,31 @@ class Markowitz(object):
                 eq3 = p[1] - df(p[2])
                 return eq1, eq2, eq3
             
-            #opt = sco.fsolve(equations,[0.01,0.5,0.15])
-            opt = sco.fsolve(equations,[rf, max(_prets), max(_pvols)])
-            
+            # 这里的参数需要自行选择
+            grad = (max(self.ann_ret) - min(self.ann_ret))/(max(self.ann_std) - min(self.ann_std))
+            opt = sco.fsolve(equations,[rf, grad, self.ann_ret.mean()])
+
+            '''            
+            # 这里的参数需要自行选择(参数优化)
+            tar_min = 3
+            p = []
+            for b in np.arange(min(_prets), max(_prets)):
+                for x in np.arange(min(_pvols), max(_pvols)):
+                    par = [rf, b, x]
+                    opt = sco.fsolve(equations,par)
+                    tar = abs(equations(opt)[1]-0) + abs(equations(opt)[2]-0)
+                    if tar < tar_min:
+                        tar_min = tar
+                        p = par
+                    else:
+                        pass
+                    
+            opt = sco.fsolve(equations,p)
+            '''
             plt.figure.Figure(figsize=(15,10))
             plt.pyplot.scatter(_pvols, _prets, c=(_prets - rf)/_pvols, marker='o')    # random portfolio composition
             plt.pyplot.plot(_evols, _erets, 'g', lw = 4.0)    # efficient frontier
-            cx = np.linspace(0.0, max(_pvols))
+            cx = np.linspace(0.0, 0.3)
             plt.pyplot.plot(cx, opt[0] + opt[1] * cx, lw = 1.5)    # capital market line
             plt.pyplot.plot(opt[2],f(opt[2]), 'r*', markersize = 15.0)
             plt.pyplot.grid(True)
@@ -189,7 +198,8 @@ class Markowitz(object):
             plt.pyplot.colorbar(label = 'sharpe ratio')
 
             # 计算最优组合
-            _cons_opt = ({'type': 'eq', 'fun': lambda x: self.statistics(x)[0] - f(opt[2])})
+            _cons_opt = ({'type': 'eq', 'fun': lambda x: self.statistics(x)[0] - f(opt[2])},
+                          {'type': 'eq','fun': lambda x: np.sum(x) - 1})
             _res = sco.minimize(min_func_port, self.noa * [1./self.noa], method = 'SLSQP',
                                bounds = _bnds, constraints = _cons_opt)
             
