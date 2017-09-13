@@ -1,0 +1,77 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Sep 12 14:45:18 2017
+
+@author: taoch
+"""
+
+# 载入模块
+import pandas as pd
+pd.set_option('expand_frame_repr',False)
+import numpy as np
+from scipy import linalg
+
+# 定义black-litterman类
+class Black_litterman(object):
+    
+    # 定义内置变量
+    def __init__(self, delta, weq, sigma, tau, P, Q):
+        '''外部输入变量'''
+        # 根据markowitz得到
+        self.weq = weq                      # 平衡投资组合中的各类资产权重
+        self.sigma = sigma                  # 先验各类资产的收益率协方差矩阵
+        
+        # 主动设定
+        self.delta = delta                  # 平衡投资组合的风险承受(风险厌恶系数)
+        self.tau = tau                      # 不确定性,标量
+        self.P = P              # 投资者观点矩阵（k*n 矩阵，当只有一个观点时，为1*n 向量）
+        self.Q = Q              # 观点收益向量（k*1 列向量）
+        
+        '''内部计算变量'''
+        self.er = []            # 后验预测收益率
+        self.w = []             # 基于后验预测收益率和收益协方差矩阵计算的组合权重
+        self.lamda = int                    # 观点对后验估计的测算
+
+
+    def bl_model(self):
+        '''
+        数据处理，bl要求输入数据都是np.array
+        '''
+        _weq = self.weq.weight.values
+        _sigma = self.sigma.values
+        _P = np.array(self.P)
+        _Q = np.array(self.Q)
+        _Omega = np.dot(np.dot(_P,self.tau*_sigma),_P.T) * np.eye(_Q.shape[0])
+                    
+        # Black-Litterman 模型配置
+        _pi = _weq.dot(_sigma * self.delta)
+
+        # 计算不确定性 * 各类资产先验收益率协方差矩阵
+        _ts = self.tau * _sigma
+        
+        # 计算后验收益率估计值
+        _middle = linalg.inv(np.dot(np.dot(_P, _ts), _P.T) + _Omega)
+
+        # 计算后验收益率    
+        _er = np.expand_dims(_pi, axis=0).T + np.dot(np.dot(np.dot(_ts, _P.T), _middle),
+                            (_Q - np.expand_dims(np.dot(_P, _pi.T), axis=1)))
+        
+        # 计算后验收益（具有不确定性）
+        _posteriorSigma = _sigma + _ts - _ts.dot(_P.T).dot(_middle).dot(_P).dot(_ts)
+    
+        # 计算后验权重基于不确定性
+        _w = _er.T.dot(linalg.inv(self.delta * _posteriorSigma)).T
+    
+        # 计算Omega的值
+        _lamda = np.dot(linalg.pinv(_P).T,(_w.T * (1 + self.tau) - _weq).T)
+       
+        # 将所有结果转化成合理的dataframe结构
+        # 匹配内部变量
+        self.er = pd.DataFrame(_er.T, columns = self.weq.index)
+        self.w = pd.DataFrame(_w.T, columns = self.weq.index)
+        self.lamda = _lamda.item        # np.array类型的变量用item取出其中数值（类似DataFrame的value）
+        
+            
+            
+            
+            
