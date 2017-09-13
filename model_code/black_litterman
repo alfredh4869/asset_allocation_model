@@ -10,27 +10,31 @@ import pandas as pd
 pd.set_option('expand_frame_repr',False)
 import numpy as np
 from scipy import linalg
+import scipy.optimize as sco
+
 
 # 定义black-litterman类
 class Black_litterman(object):
     
     # 定义内置变量
-    def __init__(self, delta, weq, sigma, tau, P, Q):
+    def __init__(self, ann_ret, delta, weq, sigma, tau, P, Q):
         '''外部输入变量'''
         # 根据markowitz得到
+        self.ann_ret = ann_ret              # 资产原始年化收益率
         self.weq = weq                      # 平衡投资组合中的各类资产权重
         self.sigma = sigma                  # 先验各类资产的收益率协方差矩阵
+        self.asset = weq.index              # 资产名称
         
         # 主动设定
         self.delta = delta                  # 平衡投资组合的风险承受(风险厌恶系数)
         self.tau = tau                      # 不确定性,标量
-        self.P = P              # 投资者观点矩阵（k*n 矩阵，当只有一个观点时，为1*n 向量）
-        self.Q = Q              # 观点收益向量（k*1 列向量）
+        self.P = P                          # 投资者观点矩阵（k*n 矩阵，当只有一个观点时，为1*n 向量）
+        self.Q = Q                          # 观点收益向量（k*1 列向量）
         
         '''内部计算变量'''
-        self.er = []            # 后验预测收益率
-        self.w = []             # 基于后验预测收益率和收益协方差矩阵计算的组合权重
-        self.lamda = int                    # 观点对后验估计的测算
+        self.er = pd.DataFrame()                        # 后验预测收益率
+        self.w = pd.DataFrame()                         # 基于后验预测收益率和收益协方差矩阵计算的组合权重
+        self.lamda = []                    # 观点对后验估计的测算
 
 
     def bl_model(self):
@@ -61,7 +65,7 @@ class Black_litterman(object):
     
         # 计算后验权重基于不确定性
         _w = _er.T.dot(linalg.inv(self.delta * _posteriorSigma)).T
-    
+        
         # 计算Omega的值
         _lamda = np.dot(linalg.pinv(_P).T,(_w.T * (1 + self.tau) - _weq).T)
        
@@ -69,9 +73,60 @@ class Black_litterman(object):
         # 匹配内部变量
         self.er = pd.DataFrame(_er.T, columns = self.weq.index)
         self.w = pd.DataFrame(_w.T, columns = self.weq.index)
-        self.lamda = _lamda.item        # np.array类型的变量用item取出其中数值（类似DataFrame的value）
+        self.lamda = _lamda        # np.array类型的变量用item取出其中数值（类似DataFrame的value）
         
-            
-            
-            
+    # 限制权重只做多权重
+    def bl_model_long(self):
+        '''
+        数据处理，bl要求输入数据都是np.array
+        '''
+        _ret = self.ann_ret.values
+        _weq = self.weq.weight.values
+        _sigma = self.sigma.values
+        _P = np.array(self.P)
+        _Q = np.array(self.Q)
+        _Omega = np.dot(np.dot(_P,self.tau*_sigma),_P.T) * np.eye(_Q.shape[0])
+                    
+        # Black-Litterman 模型配置
+        _pi = _weq.dot(_sigma * self.delta)
+
+        # 计算不确定性 * 各类资产先验收益率协方差矩阵
+        _ts = self.tau * _sigma
+        
+        # 计算后验收益率估计值
+        _middle = linalg.inv(np.dot(np.dot(_P, _ts), _P.T) + _Omega)
+
+        # 计算后验收益率    
+        _er = np.expand_dims(_pi, axis=0).T + np.dot(np.dot(np.dot(_ts, _P.T), _middle),
+                            (_Q - np.expand_dims(np.dot(_P, _pi.T), axis=1)))
+        
+        # 计算后验收益（具有不确定性）
+        _posteriorSigma = _sigma + _ts - _ts.dot(_P.T).dot(_middle).dot(_P).dot(_ts)
+    
+        # 计算后验权重基于不确定性
+        _w = _er.T.dot(linalg.inv(self.delta * _posteriorSigma)).T
+                              
+        # 定义目标：优化权重乘以历史收益的积和后验收益率OLS最小
+        def min_diff_er(weights):
+            _r = weights * _ret - _er
+            return np.sum([x*x for x in _r])
+        
+        # 定义限制
+        _cons = ({'type':'eq', 'fun': lambda x: np.sum(x) - 1})
+        _bnds = tuple((0,1) for x in range(_w.size))
+        
+        # 定义优化器
+        _opt = sco.minimize(min_diff_er, _w, method='SLSQP', 
+                             bounds= _bnds, constraints = _cons)
+        # 优化后结果权重
+        _w_opt = _opt['x'].round(4)
+        
+        # 计算Omega的值
+        _lamda = np.dot(linalg.pinv(_P).T,(_w.T * (1 + self.tau) - _weq).T)
+       
+        # 将所有结果转化成合理的dataframe结构
+        # 匹配内部变量
+        self.er = pd.DataFrame(_er.T, columns = self.asset)
+        self.w = pd.DataFrame(_w_opt, index = self.asset).T
+        self.lamda = _lamda        # np.array类型的变量用item取出其中数值（类似DataFrame的value）
             
