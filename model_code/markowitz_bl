@@ -3,6 +3,8 @@
 Created on Fri Sep  8 08:48:09 2017
 
 @author: taoch
+
+markowitz + Black-Litterman模型
 """
 
 # 载入模块
@@ -26,9 +28,10 @@ class Markowitz(object):
         底层资产的日收益率
     '''
     # 定义函数中的不同变量
-    def __init__(self, daily_ret):
+    def __init__(self, daily_ret, bl_weight):
         '''外部输入变量'''
         self.daily_ret = daily_ret                  # 资产日收益率
+        self.bl_weight = bl_weight                  # bl模型输出权重
 
         '''内部计算变量'''
         self.noa = len(daily_ret.columns)           # 资产数量
@@ -36,9 +39,9 @@ class Markowitz(object):
         self.asset = daily_ret.columns              # 资产名称
         self.daily_ret_bl = pd.DataFrame()          # 加入BL权重的资产日收益率
 
-        self.ann_ret = pd.DataFrame()               # 资产年化收益率
-        self.ann_std = pd.DataFrame()               # 资产年化波动率（标准差）
-        self.ann_cov = pd.DataFrame()               # 资产收益率相关系数
+        self.ann_ret_bl = pd.DataFrame()            # 资产年化收益率BL
+        self.ann_std_bl = pd.DataFrame()            # 资产年化波动率（标准差）BL
+        self.ann_cov_bl = pd.DataFrame()            # 资产收益率相关系数BL
         
         # 组合数据统计
         self.optr_weight = pd.DataFrame()           # 最大收益率组合权重
@@ -50,21 +53,41 @@ class Markowitz(object):
         self.opt_weight = pd.DataFrame()            # 最优组合权重
         self.opt_perform = pd.DataFrame()           # 最优组合表现
                        
-                                    
-    # 年化相关数据
-    def get_annualize_data(self):
+                                        
+    # BL权重下年化相关数据    
+    def get_annualize_data_bl(self):
         # 默认年化数据*252天（交易日）
         # 年化收益率
-        _ann_ret = self.daily_ret.mean()*252
+        _ann_ret_bl = self.daily_ret_bl.mean()*252
         # 年化波动率
-        _ann_std = self.daily_ret.std()*np.sqrt(252)
+        _ann_std_bl = self.daily_ret_bl.std()*np.sqrt(252)
         # 年化协方差矩阵
-        _ann_cov = self.daily_ret.cov() * 252
+        _ann_cov_bl = self.daily_ret_bl.cov() * 252
         # 匹配内部变量
-        self.ann_ret = _ann_ret
-        self.ann_std = _ann_std
-        self.ann_cov = _ann_cov
-                
+        self.ann_ret_bl = _ann_ret_bl
+        self.ann_std_bl = _ann_std_bl
+        self.ann_cov_bl = _ann_cov_bl
+        
+        
+    def combin_bl_wiz_dayret(self):
+        '''
+        将black-litterman组合出的权重加入markowitz
+        输入参数：
+        --------
+            daily_ret: pd.DataFrame
+                底层资产的日收益率
+            bl_weight: pd.DataFrame
+                black-litterman优化后得到的权重
+        输出参数：
+        --------
+            daily_ret_bl: pd.DataFrame
+                底层资产根据BL权重的日收益率
+        '''
+        _daily_ret_bl = self.daily_ret * self.bl_weight.values[0]
+        
+        # 配置内部变量
+        self.daily_ret_bl = _daily_ret_bl
+         
         
     # 定义均值方差投资组合（作图版）
     def mean_std_portfolio_plotting(self,
@@ -85,8 +108,8 @@ class Markowitz(object):
         for p in range(rolling_num):
             _weights = np.random.random(self.noa)
             _weights /= np.sum(_weights)
-            _prets.append(np.sum(self.daily_ret.mean() * _weights) * 252)
-            _pvols.append(np.sqrt(np.dot(_weights.T, np.dot(self.daily_ret.cov() * 252, _weights))))
+            _prets.append(np.sum(self.daily_ret_bl.mean() * _weights) * 252)
+            _pvols.append(np.sqrt(np.dot(_weights.T, np.dot(self.daily_ret_bl.cov() * 252, _weights))))
         _prets = np.array(_prets)
         _pvols = np.array(_pvols)
         
@@ -94,13 +117,11 @@ class Markowitz(object):
         def min_func_port(_weights):
             return self.statistics(_weights)[1]
         
-                    
         # 内置运行一遍get_annulized_data
-        self.get_annualize_data()
-        
+        self.get_annualize_data_bl()
         
         # 有效收益率区间（后期可以调整）
-        _trets = np.linspace(min(self.ann_ret),max(self.ann_ret),100)
+        _trets = np.linspace(min(self.ann_ret_bl),max(self.ann_ret_bl),100)
         _tvols = []
         for tret in _trets:
             # 定义约束条件
@@ -166,8 +187,8 @@ class Markowitz(object):
                 return eq1, eq2, eq3
             
             # 这里的参数需要自行选择
-            grad = (max(self.ann_ret) - min(self.ann_ret))/(max(self.ann_std) - min(self.ann_std))
-            opt = sco.fsolve(equations,[rf, grad, self.ann_ret.mean()])
+            grad = (max(self.ann_ret_bl) - min(self.ann_ret_bl))/(max(self.ann_std_bl) - min(self.ann_std_bl))
+            opt = sco.fsolve(equations,[rf, grad, self.ann_ret_bl.mean()])
 
             plt.figure.Figure(figsize=(15,10))
             plt.pyplot.scatter(_pvols, _prets, c=(_prets - rf)/_pvols, marker='o')    # random portfolio composition
@@ -181,27 +202,32 @@ class Markowitz(object):
             plt.pyplot.xlabel('expected volatility')
             plt.pyplot.ylabel('expected return')
             plt.pyplot.colorbar(label = 'sharpe ratio')
-            
+                        
 
     # 计算markowitz最优组合
-    def mean_std_portfolio(self,
+    def mean_std_portfolio_bl(self,
                            rolling_num = 10000,
                            rf = 0.01):
         '''
+        根据Black-Litterman模型结果配置的Markowitz模型
         输入参数
         -------
-        rolling_num: float 
-            模拟组合数量，默认10000
-        efficient_front: bool
-            是否画出有效边界
+            rolling_num: float 
+                模拟组合数量，默认10000
+            rf：float
+                设置无风险收益率
         '''
+        
+        # 内置运行
+        self.combin_bl_wiz_dayret()
+        
         _prets = []
         _pvols = []
         for p in range(rolling_num):
             _weights = np.random.random(self.noa)
             _weights /= np.sum(_weights)
-            _prets.append(np.sum(self.daily_ret.mean() * _weights) * 252)
-            _pvols.append(np.sqrt(np.dot(_weights.T, np.dot(self.daily_ret.cov() * 252, _weights))))
+            _prets.append(np.sum(self.daily_ret_bl.mean() * _weights) * 252)
+            _pvols.append(np.sqrt(np.dot(_weights.T, np.dot(self.daily_ret_bl.cov() * 252, _weights))))
         _prets = np.array(_prets)
         _pvols = np.array(_pvols)
         
@@ -209,11 +235,11 @@ class Markowitz(object):
         def min_func_port(_weights):
             return self.statistics(_weights)[1]
                             
-        # 内置运行一遍get_annulized_data
-        self.get_annualize_data()
+        # 内置运行get_annulized_data
+        self.get_annualize_data_bl()
                 
         # 有效收益率区间（后期可以调整）
-        _trets = np.linspace(min(self.ann_ret),max(self.ann_ret),100)
+        _trets = np.linspace(min(self.ann_ret_bl),max(self.ann_ret_bl),100)
         _tvols = []
         for tret in _trets:
 
@@ -249,9 +275,10 @@ class Markowitz(object):
             eq3 = p[1] - df(p[2])
             return eq1, eq2, eq3
         
-        # 这里的参数需要自行选择
-        grad = (max(self.ann_ret) - min(self.ann_ret))/(max(self.ann_std) - min(self.ann_std))
-        opt = sco.fsolve(equations,[rf, grad, self.ann_ret.mean()])
+        # 优化参数
+        # grad = （资产最大年化收益率 - 资产最小年化收益率）/（资产最大年化波动率 - 资产最小年化波动率）
+        grad = (max(self.ann_ret_bl) - min(self.ann_ret_bl))/(max(self.ann_std_bl) - min(self.ann_std_bl))
+        opt = sco.fsolve(equations,[rf, grad, self.ann_ret_bl.mean()])
 
         # 计算最优组合
         _cons_opt = ({'type': 'eq', 'fun': lambda x: self.statistics(x)[0] - f(opt[2])},
@@ -272,7 +299,7 @@ class Markowitz(object):
         # 内部变量匹配
         self.opt_weight = _opt_port_weight
         self.opt_perform = _opt_perform
-            
+
             
     # 结果统计（年化收益，年化波动，夏普比率）    
     def statistics(self,weights):
@@ -281,8 +308,8 @@ class Markowitz(object):
         _weights = np.array(weights)
         
         # 根据权重计算各类指标
-        _prets = np.sum(self.daily_ret.mean() * _weights) * 252
-        _pvols = np.sqrt(np.dot(_weights.T, np.dot(self.daily_ret.cov() * 252, _weights)))
+        _prets = np.sum(self.daily_ret_bl.mean() * _weights) * 252
+        _pvols = np.sqrt(np.dot(_weights.T, np.dot(self.daily_ret_bl.cov() * 252, _weights)))
         
         return np.array([_prets, _pvols, _prets/_pvols])
         
