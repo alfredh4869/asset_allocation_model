@@ -1,0 +1,42 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Sep 11 17:45:24 2017
+
+@author: taoch
+"""
+
+import pandas as pd
+from program import config
+
+import os
+import os.path
+
+
+def read_index_data(fileName):
+    table = pd.read_csv(config.input_index_data_path + '/' + fileName,
+                        encoding = 'gbk')
+    table.set_index(keys=table.TradingDay,inplace=True)
+    table.drop('TradingDay', axis = 1, inplace = True)
+    dateIndex = [pd.to_datetime(x) for x in table.index]
+    table.index = dateIndex
+    return table
+
+
+def get_filelist():
+    rootdir = config.input_index_data_path
+    filelist = []
+    for parent, dirnames, filenames in os.walk(rootdir):
+        for fileName in filenames:
+            filelist.append(fileName)
+    return filelist        
+
+
+def merge_closeprice(filelist):
+    closeprice = pd.DataFrame()
+    col = []
+    for i in filelist:
+        col.append(i[:-4])
+        table = read_index_data(i)
+        closeprice[i[:-4]] = table['ClosePrice']
+
+    return closeprice  
