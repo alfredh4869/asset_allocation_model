@@ -1,0 +1,35 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Sep 15 16:21:36 2017
+
+@author: taoch
+"""
+# 载入模块
+import scipy.stats as scs
+import pandas as pd
+import numpy as np
+import numpy.random as npr
+
+import matplotlib.pyplot as plt
+
+class VaR(object):
+    """
+    计算在险价值（Value at Risk）
+    """
+    
+    def __init__(self, daily_ret, precs = 0.05):
+        """ 输入变量 """
+        self.daily_ret = daily_ret              # 日收益率
+        self.precs = precs                      # 默认0.05(即95%的置信空间)
+        
+        self.var = np.float                     # 在险价值
+        
+    def var_calc(self):
+        # 计算置信空间下的在险价值
+        _var = scs.scoreatpercentile(self.daily_ret - 0, self.precs)
+        
+        # 匹配内部变量
+        self.var = _var
+        return self.var
+    
+    
