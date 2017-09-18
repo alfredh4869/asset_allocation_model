@@ -15,6 +15,8 @@ import numpy as np
 import scipy.optimize as sco
 import scipy.interpolate as sci
 
+import var_control as vr
+
 import matplotlib as plt
 
 
@@ -300,7 +302,116 @@ class Markowitz(object):
         self.opt_weight = _opt_port_weight
         self.opt_perform = _opt_perform
 
+        return [self.opt_weight, self.opt_perform]
             
+    
+    # 计算markowitz最优组合
+    def mean_std_portfolio_bl_var(self,
+                           rolling_num = 10000,
+                           rf = 0.01,
+                           precs = 0.05,
+                           withdraw = 0.001):
+        '''
+        根据Black-Litterman模型结果配置的Markowitz模型,控制VaR
+        输入参数
+        -------
+            rolling_num: float 
+                模拟组合数量，默认10000
+            rf：float
+                设置无风险收益率
+            precs: float
+                置信空间，默认95%
+            withdraw: float
+                VaR置信水平，默认0.001
+        '''
+        # 内置运行
+        self.combin_bl_wiz_dayret()
+        
+        _prets = []
+        _pvols = []
+        for p in range(rolling_num):
+            _weights = np.random.random(self.noa)
+            _weights /= np.sum(_weights)
+            _prets.append(np.sum(self.daily_ret_bl.mean() * _weights) * 252)
+            _pvols.append(np.sqrt(np.dot(_weights.T, np.dot(self.daily_ret_bl.cov() * 252, _weights))))
+        _prets = np.array(_prets)
+        _pvols = np.array(_pvols)
+        
+        # 定义有效边界：给定风险水平下最大收益
+        def min_func_port(_weights):
+            return self.statistics(_weights)[1]
+                            
+        # 内置运行get_annulized_data
+        self.get_annualize_data_bl()
+                
+        # 有效收益率区间（后期可以调整）
+        _trets = np.linspace(min(self.ann_ret_bl),max(self.ann_ret_bl),100)
+        _tvols = []
+        for tret in _trets:
+
+            # 定义约束条件
+            _cons = ({'type':'eq', 'fun': lambda x: self.statistics(x)[0] - tret},
+                      {'type':'eq', 'fun': lambda x: np.sum(x) - 1})
+            # 约束为0到1之间
+            _bnds = tuple((0,1) for x in range(self.noa))
+            _res = sco.minimize(min_func_port, self.noa * [1./self.noa], method = 'SLSQP',
+                                bounds = _bnds, constraints = _cons)
+            _tvols.append(_res['fun'])
+        _tvols = np.array(_tvols)
+                    
+        # 资本市场线
+        _ind = np.argmin(_tvols)
+        _evols = _tvols[_ind:]
+        _erets = _trets[_ind:]
+        
+        _tck = sci.splrep(_evols, _erets)
+        
+        def f(x):
+            """有效边界方程(splines approximations)"""
+            return sci.splev(x, _tck, der = 0)
+        
+        def df(x):
+            """有效边界方程的一阶导数"""
+            return sci.splev(x, _tck, der = 1)
+        
+        def equations(p):
+            """穿过无风险资产的有效边界切线"""
+            eq1 = rf - p[0]
+            eq2 = rf + p[1] * p[2] - f(p[2])
+            eq3 = p[1] - df(p[2])
+            return eq1, eq2, eq3
+        
+        # 优化参数
+        # grad = （资产最大年化收益率 - 资产最小年化收益率）/（资产最大年化波动率 - 资产最小年化波动率）
+        _grad = (max(self.ann_ret_bl) - min(self.ann_ret_bl))/(max(self.ann_std_bl) - min(self.ann_std_bl))
+        opt = sco.fsolve(equations,[rf, _grad, self.ann_ret_bl.mean()])
+
+        # 计算最优组合
+        # ineq指大于等于，只支持COBYLA
+        _cons_opt = ({'type': 'eq', 'fun': lambda x: self.statistics(x)[0] - f(opt[2])},
+                      {'type': 'eq', 'fun': lambda x: np.sum(x) - 1},
+                       {'type': 'ineq', 'fun': lambda x: vr.VaR(self.port_ret_D(x), precs).var_calc() - withdraw})
+        
+        _res = sco.minimize(min_func_port, self.noa * [1./self.noa], method = 'COBYLA',
+                           bounds = _bnds, constraints = _cons_opt)
+        
+        # 最优组合权重
+        _d = dict(zip(self.asset, _res['x'].round(2)))
+        _opt_port_weight = pd.DataFrame(list(_d.items()), columns = ['asset','weight'])
+        _opt_port_weight.set_index('asset',drop=True,inplace=True)
+        
+        # 最优组合表现
+        _d1 = dict(zip(['return','volatility','sharpe'],self.statistics(_res['x']).round(4)))
+        _opt_perform = pd.DataFrame(list(_d1.items()), columns = ['performs','data'])
+        _opt_perform.set_index('performs',drop=True,inplace=True)
+        
+        # 内部变量匹配
+        self.opt_weight = _opt_port_weight
+        self.opt_perform = _opt_perform
+
+        return [self.opt_weight, self.opt_perform]
+    
+    
     # 结果统计（年化收益，年化波动，夏普比率）    
     def statistics(self,weights):
         
@@ -312,6 +423,16 @@ class Markowitz(object):
         _pvols = np.sqrt(np.dot(_weights.T, np.dot(self.daily_ret_bl.cov() * 252, _weights)))
         
         return np.array([_prets, _pvols, _prets/_pvols])
+
+    # 计算组合日收益
+    def port_ret_D(self, weights):
+        # 代入相关权重
+        _weights = np.array(weights)
+        
+        # 结合相关权重计算组合日收益
+        _port_ret = (self.daily_ret_bl * _weights).sum(axis = 1)
+        
+        return _port_ret
         
     # 带约束的投资组合
     def constraint_portfolio(self):
@@ -340,11 +461,11 @@ class Markowitz(object):
         
         # 收益最大化组合权重
         d = dict(zip(self.asset, _optr['x'].round(2)))
-        _optr_port_weight = pd.DataFrame(list(d.items()), columns = ['asset','weight'])
+        _optr_port_weight = pd.DataFrame(list(d.items()), columns = ['asset','weight_optr'])
         
         # 收益最大化组合表现
         d1 = dict(zip(['return','volatility','sharpe'],self.statistics(_optr['x']).round(4)))
-        _optr_perform = pd.DataFrame(list(d1.items()),columns = ['performs','data'])
+        _optr_perform = pd.DataFrame(list(d1.items()),columns = ['performs_optr','data'])
 
         # 匹配内部变量
         self.optr_weight = _optr_port_weight
@@ -361,13 +482,14 @@ class Markowitz(object):
         
         # 波动率最小化组合权重
         d = dict(zip(self.asset,_optv['x'].round(2)))
-        _optv_port_weight = pd.DataFrame(list(d.items()), columns = ['asset','weight'])
+        _optv_port_weight = pd.DataFrame(list(d.items()), columns = ['asset','weight_optv'])
         _optv_port_weight.set_index('asset',drop=True,inplace=True)
         # 波动率最小化组合表现
         d1 = dict(zip(['return','volatility','sharpe'],self.statistics(_optv['x'].round(4))))
-        _optv_perform = pd.DataFrame(list(d1.items()),columns = ['performs','data'])
+        _optv_perform = pd.DataFrame(list(d1.items()),columns = ['performs_optv','data'])
         _optv_perform.set_index('performs',drop=True,inplace=True)
         # 匹配内部变量
         self.optv_weight = _optv_port_weight
         self.optv_perform = _optv_perform
 
+        return [self.optr_weight, self.optr_perform, self.optv_weight, self.optv_perform]
