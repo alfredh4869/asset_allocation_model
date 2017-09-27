@@ -1,0 +1,266 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Wed Sep 27 08:50:25 2017
+
+@author: taoch
+"""
+import pandas as pd
+pd.set_option('expand_frame_repr',False)
+import numpy as np
+
+class Trade_Implementation(object):
+    
+    def __init__(self, trade_date,
+                 rebalance_date,
+                 price,
+                 weight,
+                 commission,
+                 initialCap):
+        
+        '''初始变量'''
+        self.trade_date = trade_date
+        self.rebalance_date = rebalance_date
+        self.price = price
+        self.weight = weight
+        self.initialCap = initialCap
+        self.asset = price.columns        
+        self.commission = commission
+        
+        '''输出变量'''
+        self.amount = pd.DataFrame()
+        self.pos_value = pd.DataFrame()
+        self.pos_num = pd.DataFrame()
+        self.tran_cost = pd.DataFrame()
+  
+    def auto_trade(self):
+        """
+        模拟交易过程,不计算手续费
+        根据收盘价输出的信号，按收盘价进行开仓平仓
+        输入参数：
+        -------
+            date: 交易日期(价格DF的索引)
+            price: 资产收盘价
+            weight: 资产权重(索引为date)
+            rebalance_date: 信号调仓日期
+            commission: 交易佣金
+            initialCap: 初始资产
+        输出参数：
+        -------
+            amount: 资产统计
+        """
+        # 内置变量释放
+        date = self.trade_date
+        price = self.price
+        weight = self.weight
+        rebalance_date = self.rebalance_date
+        commission = self.commission
+        initialCap = self.initialCap
+        
+        # 创建资产表格：统计空头持仓，多头持仓,资产总值
+        # 资产总值 = 空头持仓 - 多头持仓
+        amount = pd.DataFrame(index = date,columns=['long','short','cash','cap','comm'])
+        
+        # 调仓日当日理论资产分布
+        amount_t = pd.DataFrame(index = date,columns=['long','short','cash','cap','comm'])
+            
+        # 调仓日当日理论资产分布
+        amount_sh = pd.DataFrame(index = date,columns=['long','short','cash','cap','comm'])
+        
+        # 统计每种资产的持有份额
+        pos_num = pd.DataFrame(index=date,columns=price.columns)
+        # 调仓日资产收盘前持有份额
+        pos_num_ac = pd.DataFrame(index=date,columns=price.columns)
+        
+        # 调仓日资产收盘前持有价值
+        pos_value_ac = pd.DataFrame(index = date,columns=price.columns)
+        
+        # 统计每种资产持有价值
+        pos_value = pd.DataFrame(index = date,columns=price.columns)
+        
+        # 统计每种资产持有价值
+        pos_value_sh = pd.DataFrame(index = date,columns=price.columns)
+        
+        
+        # 设定第一天情况
+        # 多头和空头仓位为0
+        amount.at[date[0],['long','short','comm']] = 0
+        # 现金和总资产为初始资产
+        amount.at[date[0],['cash','cap']] = initialCap
+                 
+        # 设定第一天持仓情况
+        pos_num.ix[date[0]] = 0
+        pos_value.ix[date[0]] = 0
+    
+        # 从第二天开始统计
+        for i in np.arange(1,len(date)):
+            # 【Case 1】当日是非调仓日
+            if date[i] not in rebalance_date:
+                #for asset in price.columns:
+                # 【Case 1.1】 前一日无持仓：
+                if amount.at[date[i-1],'long'] == 0 and amount.at[date[i-1],'short'] == 0: 
+                    for asset in price.columns:
+                        # 当日持仓份额 = 前一日持仓份额
+                        pos_num.at[date[i],asset] = pos_num.at[date[i-1],asset]
+                        # 当日持仓价值 = 前一日持仓价值
+                        pos_value.at[date[i],asset] = pos_value.at[date[i-1],asset] 
+                    # 当日多空资产价值 = 前一日多空资产价值
+                    amount.at[date[i],'long'] = amount.at[date[i-1],'long']
+                    amount.at[date[i],'short'] = amount.at[date[i-1],'short'] 
+                    # 当日现金 = 前一日现金
+                    amount.at[date[i],'cash'] = amount.at[date[i-1],'cash']
+                    # 当日资产等于前一日
+                    amount.at[date[i],'cap'] = amount.at[date[i-1],'cap']
+                    # 当日累积手续费等于前一日
+                    amount.at[date[i],'comm'] = amount.at[date[i-1],'comm']
+                # 【Case 1.2】 前一日有持仓
+                elif amount.at[date[i-1],'long']!=0 or amount.at[date[i-1],'short']!=0: 
+                    # !!! elif中需要单独套一层for循环
+                    for asset in price.columns:
+                        # 如果持有多头
+                        if pos_num.at[date[i-1],asset]>0:
+                            # 当日持仓份额等于前一日持仓份额
+                            pos_num.at[date[i],asset] = pos_num.at[date[i-1],asset]
+                            # 当日持仓价值 = 当日持仓份额 * 当日收盘价
+                            pos_value.at[date[i],asset] = pos_num.at[date[i],asset] * price.at[date[i],asset]
+                            # 非空头持仓pos_value_sh为0
+                            pos_value_sh.at[date[i],asset] = 0
+    
+                        # 如果持有空头
+                        elif pos_num.at[date[i-1],asset]<0:
+                            # 当日持仓份额等于前一日持仓份额
+                            pos_num.at[date[i],asset] = pos_num.at[date[i-1],asset]
+                            # 当日持仓价值 = 前一日持仓份额 * （2*前一日收盘价-当日收盘价）
+    #                            pos_value.at[date[i],asset] = pos_num.at[date[i-1],asset] * (2*price.at[date[i-1],asset] - price.at[date[i],asset])
+                            pos_value.at[date[i],asset] = pos_num.at[date[i],asset] * price.at[date[i],asset]                            
+                            # 统计持仓的现金收益
+                            pos_value_sh.at[date[i],asset] = 2*(pos_value.at[date[i],asset] - pos_value.at[date[i-1],asset])
+                            #print(asset + ' on ' + str(date[i]) + ' earned cash ' + str(pos_value_sh.at[date[i],asset]))
+                        else:
+                            # 当日持仓份额 = 前一日持仓份额
+                            pos_num.at[date[i],asset] = pos_num.at[date[i-1],asset]
+                            # 当日持仓价值 = 前一日持仓价值
+                            pos_value.at[date[i],asset] = pos_value.at[date[i-1],asset]
+                            # 非空头持仓pos_value_sh为0
+                            pos_value_sh.at[date[i],asset] = 0
+    
+                    # 计算当日多空持仓价值
+                    # 先假设当日多空持仓为0
+                    amount.at[date[i],'long'] = 0
+                    amount.at[date[i],'short'] = 0
+                    # 多空持仓分别求和
+                    for value in pos_value.ix[date[i]]:
+                        if value > 0:
+                            amount.at[date[i],'long'] += value
+                        elif value < 0:
+                            amount.at[date[i],'short'] += value
+                    # 如果当日有空头，统计现金部分增益                 
+                    amount_sh.at[date[i],'cash'] = pos_value_sh.ix[date[i]].sum()
+                    # 当日现金 = 前一日现金
+                    amount.at[date[i],'cash'] = amount.at[date[i-1],'cash'] + amount_sh.at[date[i],'cash']
+                    # 当日资产 = 多头价值 - 空头价值 + 当日现金
+                    amount.at[date[i],'cap'] = amount.at[date[i],'long'] - amount.at[date[i],'short'] + amount.at[date[i],'cash']    
+                    # 当日累积手续费等于前一日
+                    amount.at[date[i],'comm'] = amount.at[date[i-1],'comm']
+            # 【Case 2】当日是调仓日
+            elif date[i] in rebalance_date:
+                # 【Case 2.1】前一日无持仓
+                if amount.at[date[i-1],'long'] == 0 and amount.at[date[i-1],'short'] == 0:
+                    for asset in price.columns:
+                        # 当日资产 = 前一日现金 * 当日权重
+                        pos_value.at[date[i],asset] = amount.at[date[i-1],'cash'] * weight.at[date[i],asset] / (1+commission)
+                        # 当日持仓份额 = 当日资产价值/当日收盘价
+                        pos_num.at[date[i],asset] = pos_value.at[date[i],asset]/price.at[date[i],asset]
+                    # 计算当日多空持仓价值
+                    # 先假设当日多空持仓为0
+                    amount.at[date[i],'long'] = 0
+                    amount.at[date[i],'short'] = 0
+                    # 多空持仓分别求和
+                    for value in pos_value.ix[date[i]]:
+                        if value > 0:
+                            amount.at[date[i],'long'] += value
+                        elif value < 0:
+                            amount.at[date[i],'short'] += value
+                    # 当日累积手续费等于前一日 + 当日手续费
+                    todayComm = (amount.at[date[i],'long'] - amount.at[date[i],'short']) * commission
+                    amount.at[date[i],'comm'] = amount.at[date[i-1],'comm'] + todayComm
+                    
+                    # 当日现金 = 前一日现金 - （多头价值 - 空头价值） - 当日手续费
+                    amount.at[date[i],'cash'] = amount.at[date[i-1],'cash'] - (amount.at[date[i],'long'] - amount.at[date[i],'short']) - todayComm
+                    # 当日资产 = 当日多空价值绝对值和 + 当日现金
+                    amount.at[date[i],'cap'] = amount.at[date[i],'long'] - amount.at[date[i],'short'] + amount.at[date[i],'cash']
+                    
+                # 【Case 2.2】前一日有持仓
+                elif amount.at[date[i-1],'long'] != 0 or amount.at[date[i-1],'short'] != 0:
+                    # elif中需要单独套一层for循环
+                    for asset in price.columns:
+                        # 调仓前
+                        # 当日资产调仓前份额 = 前一日份额
+                        pos_num_ac.at[date[i],asset] = pos_num.at[date[i-1],asset]
+                        # 当日资产调仓前价值 = 前一日份额 * 当日收盘价
+                        pos_value_ac.at[date[i],asset] = pos_num_ac.at[date[i],asset] * price.at[date[i],asset]
+                        if pos_num.at[date[i-1],asset] < 0:
+                            pos_value_sh.at[date[i],asset] = 2*(pos_value_ac.at[date[i],asset] - pos_value.at[date[i-1],asset])
+                        else:
+                            pos_value_sh.at[date[i],asset] = 0
+                    # 计算当日调仓前多空价值
+                    # 先假设当日多空持仓为0
+                    amount_t.at[date[i],'long'] = 0
+                    amount_t.at[date[i],'short'] = 0
+                    amount_t.at[date[i],'comm'] = 0
+                    # 多空持仓分别求和
+                    for value in pos_value_ac.ix[date[i]]:
+                        if value > 0:
+                            amount_t.at[date[i],'long'] += value
+                        elif value < 0:
+                            amount_t.at[date[i],'short'] += value
+                    # 如果当日有空头，统计现金部分增益                 
+                    amount_sh.at[date[i],'cash'] = pos_value_sh.ix[date[i]].sum()
+                    # 调仓前现金 = 前一日现金
+                    #amount_t.at[date[i],'cash'] = amount.at[date[i-1],'cash']
+                    # 当日调仓前现金 = 调仓前多空价值绝对值和 + 前一日现金
+                    amount_t.at[date[i],'cash'] = amount_t.at[date[i],'long'] - amount_t.at[date[i],'short'] + amount.at[date[i-1],'cash'] + amount_sh.at[date[i],'cash'] + amount_sh.at[date[i],'cash']
+                    # 当日调仓前资产 = 调仓前现金
+                    amount_t.at[date[i],'cap'] = amount_t.at[date[i],'cash']
+                    
+                    
+                    for asset in price.columns:
+                        # 调仓后
+                        # 各类资产调仓后价值 = 调仓前现金 * 当日资产权重
+                        pos_value.at[date[i],asset] = amount_t.at[date[i],'cash'] * weight.at[date[i],asset]
+                        # 各类资产调仓后份额 = 各类资产调仓后价值/当日收盘价
+                        pos_num.at[date[i],asset] = pos_value.at[date[i],asset]/price.at[date[i],asset]
+                        # 如果资产和前一日的权重不一样，则要计算交易成本
+                        if weight.at[date[i],asset] != weight.at[date[i-1],asset]:
+                            amount_t.at[date[i],'comm'] += abs(pos_num.at[date[i],asset]-pos_num_ac.at[date[i],asset]) * price.at[date[i],asset] * commission
+                    # 计算调仓后多空价值
+                    # 先假设当日多空持仓为0
+                    amount.at[date[i],'long'] = 0
+                    amount.at[date[i],'short'] = 0
+                    # 多空持仓分别求和              
+                    for value in pos_value.ix[date[i]]:
+                        if value > 0:
+                            amount.at[date[i],'long'] += value
+                        elif value < 0:
+                            amount.at[date[i],'short'] += value
+    
+                    amount.at[date[i],'comm'] = amount.at[date[i-1],'comm'] +amount_t.at[date[i],'comm']
+                    # 调仓后现金 = 调仓前现金 - 多空仓位价值 - 交易成本
+                    amount.at[date[i],'cash'] = amount_t.at[date[i],'cash'] - (amount.at[date[i],'long'] - amount.at[date[i],'short']) - amount_t.at[date[i],'comm']
+                    #if _llt_weight.at[date[i],asset] !=_llt_weight.at[date[i-1],asset]:
+                    #    comm = abs(_llt_weight.at[date[i],asset]-_llt_weight.at[date[i-1],asset]) * amount_t.at[date[i],'cash'] * commission
+                    #    print (date[i],asset,comm)
+                    #    amount.at[date[i],'cash'] -= comm
+                    # 调仓后资产 = 调仓后现金 + 多空价值
+                    amount.at[date[i],'cap'] = amount.at[date[i],'cash'] + (amount.at[date[i],'long'] - amount.at[date[i],'short'])
+                             
+        self.amount = amount
+        self.pos_num = pos_num
+        self.pos_value = pos_value
+
+                
+                    
+                        
+                              
+             
+    
+    
