@@ -8,3 +8,6 @@ typical asset allocation model
 
 2017.09.13更新
 更新2： Black-Litterman模型
+
+2017.9.27更新
+更新3： 支持多空交易的模拟交易系统
