@@ -18,15 +18,20 @@ from scipy import linalg
 class Black_litterman(object):
     
     # 定义内置变量
-    def __init__(self, ann_ret, ann_vol, sigma, tau, P, Q):
+    def __init__(self, ann_ret, ann_vol, weq, sigma, tau, P, Q):
         '''外部输入变量'''
         # 根据markowitz得到
         self.ann_ret = ann_ret              # 资产历史年化收益率 
         self.ann_vol = ann_vol              # 资产历史年化波动率
         self.sigma = sigma                  # 先验各类资产的收益率协方差矩阵
         self.asset = ann_ret.index          # 资产名称
-        self.weq = pd.DataFrame()           # 平衡投资组合中的各类资产权重
-        
+        self.weq = weq                      # 均衡态权重
+        '''
+        if weq is None:
+            self.set_weq()              
+        else:
+            self.weq = weq                  # 平衡投资组合中的各类资产权重
+        '''
         # 主动设定
         self.delta = np.nan                 # 平衡投资组合的风险承受(风险厌恶系数)
         self.tau = tau                      # 不确定性,标量
@@ -56,9 +61,9 @@ class Black_litterman(object):
             无风险收益率 = 所有资产历史最小收益率；
             市场收益方差 = 所有资产历史平均波动率；
         '''
-        _exp_ret = self.ann_ret.mean()
+        _exp_ret = np.max(self.ann_ret)
         _risk_free = np.min(self.ann_ret)
-        _exp_var = np.square(self.ann_vol.mean())
+        _exp_var = np.square(np.max(self.ann_vol) - np.min(self.ann_vol))
           
         _delta = (_exp_ret - _risk_free)/_exp_var
         
@@ -66,7 +71,55 @@ class Black_litterman(object):
         self.delta = _delta
         
         
-    def bl_model(self):
+    def bl_model_weq(self):
+        '''
+        数据处理，bl要求输入数据都是np.array
+        '''
+
+        # 设置风险厌恶系数
+        self.get_delta()
+        
+        _weq = self.weq.weight.values
+        _sigma = self.sigma.values
+        _P = np.array(self.P)
+        _Q = np.array(self.Q)
+        
+        # 计算Omega： 观点误差的协方差矩阵，对角阵，表示每个观点的信心水平（k*k矩阵）
+        _Omega = np.dot(np.dot(_P,self.tau*_sigma),_P.T) * np.eye(_Q.shape[0])
+                    
+        # Black-Litterman 模型配置
+        # 计算隐含均衡收益向量pi
+        _pi = _weq.dot(_sigma * self.delta)
+
+        # 计算不确定性 * 各类资产先验收益率协方差矩阵
+        _ts = self.tau * _sigma
+        
+        # 计算后验收益率估计值
+        _middle = linalg.inv(np.dot(np.dot(_P, _ts), _P.T) + _Omega)
+
+        # 计算后验收益率    
+        _er = np.expand_dims(_pi, axis=0).T + np.dot(np.dot(np.dot(_ts, _P.T), _middle),
+                            (_Q - np.expand_dims(np.dot(_P, _pi.T), axis=1)))
+        
+        # 计算后验收益（具有不确定性）
+        _posteriorSigma = _sigma + _ts - _ts.dot(_P.T).dot(_middle).dot(_P).dot(_ts)
+    
+        # 计算后验权重基于不确定性
+        _w = _er.T.dot(linalg.inv(self.delta * _posteriorSigma)).T
+        
+        # 计算Omega的值
+        _lamda = np.dot(linalg.pinv(_P).T,(_w.T * (1 + self.tau) - _weq).T)
+       
+        # 将所有结果转化成合理的dataframe结构
+        # 匹配内部变量
+        self.er = pd.DataFrame(_er.T, columns = self.weq.index)
+        self.w = pd.DataFrame(_w.T, columns = self.weq.index)
+        self.lamda = _lamda        # np.array类型的变量用item取出其中数值（类似DataFrame的value）
+        
+        return [self.er, self.w, self.lamda]
+
+    # BL的weq为等权权重输入
+    def bl_model_eweq(self):
         '''
         数据处理，bl要求输入数据都是np.array
         '''
@@ -112,3 +165,4 @@ class Black_litterman(object):
         self.w = pd.DataFrame(_w.T, columns = self.weq.index)
         self.lamda = _lamda        # np.array类型的变量用item取出其中数值（类似DataFrame的value）
         
+        return [self.er, self.w, self.lamda]
