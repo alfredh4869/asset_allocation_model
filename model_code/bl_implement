@@ -1,0 +1,150 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Wed Sep 27 16:51:17 2017
+
+@author: taoch
+"""
+
+# 载入模块
+import numpy as np
+import pandas as pd
+pd.set_option('expand_frame_repr',False)
+import copy
+
+import config
+import utils
+
+from datetime import timedelta
+
+'''         基本数据准备      '''
+# 读取各类数据
+# 读取文件夹
+filelist = utils.get_filelist()
+
+# 读取所有收盘价然后合并（向前填充缺失值）
+closeprice = utils.merge_closeprice(filelist)
+closeprice.fillna(method='ffill',inplace=True)
+
+# 从2008年黄金指数成立开始
+start = pd.to_datetime('2008-01-10')
+closeprice1 = closeprice[start:]
+
+# 计算各类指数收益率
+day_ret = closeprice.pct_change().dropna()
+day_ret = day_ret[start:]
+
+# 观察收益变化
+from program import norm_dist_check as norm
+norm.normalization(closeprice[start:])
+
+
+'''     回测关键时间点     '''
+# 截取交易日期
+# 选取收益率前一天
+tradingday = closeprice[(start - timedelta(1)):].index
+# 截取收益日期
+# 从有收益率的第一天开始
+retday = day_ret.index
+
+'''
+# 选取调仓时间
+！！！ 切换调仓频率 ！！！
+'''
+reb_day = utils.rebalance_freq(tradingday,freq='Q')
+
+# LLT 函数算法
+def signal_LLT(series,par):
+    
+    # =====计算LLT
+    cp = copy.deepcopy(series)
+    LLT = copy.deepcopy(series)
+    a = 2.0/(par + 1.0)
+    for i in np.arange(2,len(LLT)):
+        LLT[i] = (a - (a*a)/4)*cp[i]+((a*a)/2)*cp[i-1]-(a-3*(a*a)/4)*cp[i-2]+2*(1-a)*LLT[i-1]-2*(1-a)*LLT[i-1]-(1-a)*(1-a)*LLT[i-2]    
+
+    LLT_grad = LLT.pct_change()
+    return LLT_grad
+
+'''
+# 计算LLt斜率
+！！！ 切换调仓参数 ！！！
+'''
+llt = pd.DataFrame()
+for asset in closeprice.columns:
+    llt[asset] = signal_LLT(closeprice1[asset],50)
+    
+
+'''
+Black-Litterman模型
+'''
+import markowitz as m
+import black_litterman as bl
+
+#mko = m.Markowitz(day_ret)
+
+def calc_bl_weight(day_ret, llt, reb_day,var = False,eweq = False):
+    '''
+    计算每次调仓日的权重
+    '''
+    tau = 2.5
+    weight = []
+    for i in np.arange(1,len(reb_day)):
+        mko = m.Markowitz(day_ret[reb_day[i-1] : reb_day[i]])
+        mko.get_annualize_data()
+        ann_ret = mko.ann_ret
+        ann_vol = mko.ann_std
+        ann_cov = mko.ann_cov
+        
+        _P = llt.ix[reb_day[i]].values
+        _Q = np.array([_P.mean()])
+        P = [_P]
+        Q = [_Q]
+        
+        res = mko.mean_std_portfolio()
+        # 平衡权重
+        weq = res[0]
+                 
+        blm = bl.Black_litterman(ann_ret, ann_vol, weq, ann_cov, tau, P, Q)
+        if eweq:
+            res_bl = blm.bl_model_eweq()
+        else:            
+            res_bl = blm.bl_model_weq()
+            
+        weight.append(res_bl[1].values[0])
+    return weight
+
+# 输入Mko权重
+weight = calc_bl_weight(day_ret, llt, reb_day)
+
+# 输入等权重
+weight = calc_bl_weight(day_ret,llt,reb_day,eweq = True)
+
+# 匹配每一个调仓日权重    
+weight1 = pd.DataFrame(weight, index = reb_day[1:], columns = closeprice.columns)    
+
+# 将权重为负的资产权重将为0
+weight1[weight1<0]=0
+       
+# 放大到权重和为1
+weight_sum = weight1.sum(axis=1)
+w = (weight1.T/weight_sum).T
+
+# 展开权重到每一个交易日
+weight2 = w.resample('B',fill_method = 'ffill')        
+weight2 = weight2.ix[tradingday].fillna(0)   
+
+
+# 进行模拟交易
+import trade_implement as trade
+t = trade.Trade_Implementation(trade_date = tradingday,
+                               rebalance_date = reb_day,
+                               price = closeprice1,
+                               weight = weight2,
+                               initialCap = 1,
+                               commission = 0)
+
+td = t.auto_trade()
+test = t.amount
+val = t.pos_value
+
+
